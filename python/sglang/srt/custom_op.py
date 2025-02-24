@@ -3,6 +3,7 @@ from torch import nn
 
 _is_cuda = torch.cuda.is_available() and torch.version.cuda
 _is_rocm = torch.cuda.is_available() and torch.version.hip
+_is_npu = torch.npu.is_available() and torch.version.npu
 
 
 class CustomOp(nn.Module):
@@ -17,6 +18,9 @@ class CustomOp(nn.Module):
         raise NotImplementedError
 
     def forward_cuda(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def forward_npu(self, *args, **kwargs):
         raise NotImplementedError
 
     def forward_hip(self, *args, **kwargs):
@@ -34,6 +38,8 @@ class CustomOp(nn.Module):
     def dispatch_forward(self):
         if _is_cuda:
             return self.forward_cuda
+        elif _is_npu:
+            return self.forward_npu
         elif _is_rocm:
             return self.forward_hip
         else:

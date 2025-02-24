@@ -4,6 +4,10 @@ from abc import abstractmethod
 from enum import Enum
 from typing import Callable, List, Optional, Tuple
 
+from python.sglang.srt.layers.moe.fused_moe_triton.fused_moe_npu import (
+    fused_experts_npu,
+    group_topk_npu,
+)
 import torch
 
 from sglang.srt.custom_op import CustomOp
@@ -189,6 +193,37 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
                 inplace=True,
                 activation=activation,
             )
+    def forward_npu(
+            self,
+            layer: torch.nn.Module,
+            x: torch.Tensor,
+            use_grouped_topk: bool,
+            top_k: int,
+            router_logits: torch.Tensor,
+            renormalize: bool,
+            topk_group: Optional[int] = None,
+            num_expert_group: Optional[int] = None,
+            custom_routing_function: Optional[Callable] = None,
+            correction_bias: Optional[torch.Tensor] = None,
+            activation: str = "softmax",
+    ) -> torch.Tensor:
+
+        topk_weights, topk_ids = group_topk_npu(
+            hidden_states=x,
+            gating_output=router_logits,
+            topk=top_k,
+            renormalize=renormalize,
+            num_expert_group=num_expert_group,
+            topk_group=topk_group,
+            scoring_func=activation,
+            e_score_correction_bias=correction_bias)
+
+        return fused_experts_npu(hidden_states=x,
+                            w1=layer.w13_weight,
+                            w2=layer.w2_weight,
+                            topk_weights=topk_weights,
+                            topk_ids=topk_ids,
+                            top_k=top_k)
 
     def forward_cpu(
         self,
