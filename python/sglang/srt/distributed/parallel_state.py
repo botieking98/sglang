@@ -41,6 +41,7 @@ from torch.distributed import Backend, ProcessGroup
 from sglang.srt.utils import (
     direct_register_custom_op,
     is_cuda_alike,
+    is_npu,
     supports_custom_op,
 )
 
@@ -213,6 +214,8 @@ class GroupCoordinator:
 
         if is_cuda_alike():
             self.device = torch.device(f"cuda:{local_rank}")
+        elif is_npu():
+            self.device = torch.device(f"npu:{local_rank}")
         else:
             self.device = torch.device("cpu")
 

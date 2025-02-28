@@ -682,7 +682,7 @@ class DeepseekScalingRotaryEmbedding(RotaryEmbedding):
         beta_slow: int = 1,
         mscale: float = 1,
         mscale_all_dim: float = 0,
-        device: Optional[str] = "cuda",
+        device: Optional[str] = "npu",
     ) -> None:
         self.scaling_factor = scaling_factor
         self.extrapolation_factor = extrapolation_factor
@@ -747,39 +747,32 @@ class DeepseekScalingRotaryEmbedding(RotaryEmbedding):
         key: torch.Tensor,
         offsets: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """PyTorch-native implementation equivalent to forward()."""
-        query_rot = query[..., : self.rotary_dim]
-        key_rot = key[..., : self.rotary_dim]
-        if self.rotary_dim < self.head_size:
-            query_pass = query[..., self.rotary_dim :]
-            key_pass = key[..., self.rotary_dim :]
+        import torch_npu
 
-        self.cos_sin_cache: torch.Tensor = self.cos_sin_cache.to(positions.device)
-        cos_sin = self.cos_sin_cache[
-            torch.add(positions, offsets) if offsets is not None else positions
-        ]
-        cos, sin = cos_sin.chunk(2, dim=-1)
-        if self.is_neox_style:
-            # NOTE(woosuk): Here we assume that the positions tensor has the
-            # shape [batch_size, seq_len].
-            cos = cos.repeat(1, 1, 2).unsqueeze(-2)
-            sin = sin.repeat(1, 1, 2).unsqueeze(-2)
+        if self.cos_sin_cache.device != query.device:
+            self.cos_sin_cache = self.cos_sin_cache.to(query.device)
+        if self.cos_sin_cache.dtype != query.dtype:
+            self.cos_sin_cache = self.cos_sin_cache.to(query.dtype)
+        if offsets is not None:
+            raise NotImplementedError(
+                "Batched rotary embedding is currently not supported on NPU.")
         else:
-            cos = cos.repeat_interleave(2, dim=-1).unsqueeze(-2)
-            sin = sin.repeat_interleave(2, dim=-1).unsqueeze(-2)
+            # TODO: Remove the contiguous in the future.
+            ori_query_shape, ori_key_shape = query.shape, key.shape
+            query = query.contiguous().view(query.shape[0], -1)
+            key = key.contiguous().view(query.shape[0], -1)
+            torch_npu.npu_rope(
+                positions,
+                query,
+                key,
+                self.head_size,
+                self.cos_sin_cache,
+                self.is_neox_style,
+            )
+            query = query.view(ori_query_shape)
+            key = key.view(ori_key_shape)
 
-        rotate_fn = _rotate_neox if self.is_neox_style else _rotate_gptj
-        query_rot = query_rot * cos + rotate_fn(query_rot) * sin
-        key_rot = key_rot * cos + rotate_fn(key_rot) * sin
-
-        if self.rotary_dim < self.head_size:
-            query = torch.cat((query_rot, query_pass), dim=-1)
-            key = torch.cat((key_rot, key_pass), dim=-1)
-        else:
-            query = query_rot
-            key = key_rot
         return query, key
-
 
 class Llama3RotaryEmbedding(RotaryEmbedding):
 

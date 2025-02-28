@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from python.sglang.srt.layers.attention.ascend_backend import AscendAttentionBackend
 import torch
 from torch.nn.functional import scaled_dot_product_attention
 
@@ -260,3 +261,5 @@ class TorchNativeAttnBackend(AttentionBackend):
         )
 
         return o
+
+TorchNativeAttnBackend.forward = AscendAttentionBackend.forward
