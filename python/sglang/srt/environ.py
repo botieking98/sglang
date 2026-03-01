@@ -357,6 +357,9 @@ class Envs:
     SGLANG_DG_USE_NVRTC = EnvBool(False)
     SGLANG_USE_DEEPGEMM_BMM = EnvBool(False)
 
+    # Unified JIT Cache Root (see cache_config.py)
+    SGLANG_JIT_CACHE_ROOT = EnvStr(None)  # None means use XDG default
+
     # DeepSeek MHA Optimization
     SGLANG_CHUNKED_PREFIX_CACHE_THRESHOLD = EnvInt(8192)
 
