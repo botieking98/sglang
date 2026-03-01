@@ -257,12 +257,11 @@ def gpu_p2p_access_check(src: int, tgt: int) -> bool:
     if cuda_visible_devices is None:
         cuda_visible_devices = ",".join(str(i) for i in range(num_dev))
 
-    # VLLM_CACHE_ROOT -> SGLANG_CACHE_ROOT
-    # "~/.cache/vllm" -> "~/.cache/sglang"
-    SGLANG_CACHE_ROOT = os.path.expanduser("~/.cache/sglang")
-    path = os.path.join(
-        SGLANG_CACHE_ROOT, f"gpu_p2p_access_cache_for_{cuda_visible_devices}.json"
-    )
+    # Use unified cache configuration
+    from sglang.srt.cache_config import get_custom_all_reduce_cache_path, get_jit_cache_root
+
+    path = get_custom_all_reduce_cache_path(cuda_visible_devices)
+    SGLANG_CACHE_ROOT = get_jit_cache_root()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     from sglang.srt.distributed.parallel_state import get_world_group
 

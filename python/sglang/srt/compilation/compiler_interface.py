@@ -187,12 +187,25 @@ class InductorAdaptor(CompilerInterface):
         # set flags so that Inductor and Triton store their cache
         # in the cache_dir, then users only need to copy the cache_dir
         # to another machine to reuse the cache.
-        inductor_cache = os.path.join(self.base_cache_dir, "inductor_cache")
-        os.makedirs(inductor_cache, exist_ok=True)
-        os.environ["TORCHINDUCTOR_CACHE_DIR"] = inductor_cache
-        triton_cache = os.path.join(self.base_cache_dir, "triton_cache")
-        os.makedirs(triton_cache, exist_ok=True)
-        os.environ["TRITON_CACHE_DIR"] = triton_cache
+        # Use cache_config if available, otherwise fallback to default behavior
+        from sglang.srt.cache_config import get_cache_path
+
+        # Get paths from centralized config or fallback to legacy behavior
+        inductor_cache = get_cache_path("inductor")
+        if inductor_cache is None:
+            inductor_cache = os.path.join(self.base_cache_dir, "inductor_cache")
+            os.makedirs(inductor_cache, exist_ok=True)
+            os.environ["TORCHINDUCTOR_CACHE_DIR"] = inductor_cache
+        elif "TORCHINDUCTOR_CACHE_DIR" not in os.environ:
+            os.environ["TORCHINDUCTOR_CACHE_DIR"] = inductor_cache
+
+        triton_cache = get_cache_path("triton")
+        if triton_cache is None:
+            triton_cache = os.path.join(self.base_cache_dir, "triton_cache")
+            os.makedirs(triton_cache, exist_ok=True)
+            os.environ["TRITON_CACHE_DIR"] = triton_cache
+        elif "TRITON_CACHE_DIR" not in os.environ:
+            os.environ["TRITON_CACHE_DIR"] = triton_cache
 
     def compile(
         self,

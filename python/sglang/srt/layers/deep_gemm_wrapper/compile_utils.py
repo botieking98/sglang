@@ -29,10 +29,17 @@ _IS_FIRST_RANK_ON_NODE = envs.SGLANG_IS_FIRST_RANK_ON_NODE.get()
 _IN_PRECOMPILE_STAGE = envs.SGLANG_IN_DEEPGEMM_PRECOMPILE_STAGE.get()
 _FAST_WARMUP = envs.SGLANG_JIT_DEEPGEMM_FAST_WARMUP.get()
 
-# Force redirect deep_gemm cache_dir
-os.environ["DG_JIT_CACHE_DIR"] = os.getenv(
-    "SGLANG_DG_CACHE_DIR", os.path.join(os.path.expanduser("~"), ".cache", "deep_gemm")
-)
+# Cache directory is now configured by cache_config.configure_jit_cache_root()
+# which is called early in server/engine initialization.
+# This import ensures we can access the cache path if configured.
+from sglang.srt.cache_config import get_cache_path
+
+# For backward compatibility, ensure DG_JIT_CACHE_DIR is set
+# configure_jit_cache_root() should have been called by now
+if "DG_JIT_CACHE_DIR" not in os.environ:
+    cache_path = get_cache_path("deep_gemm")
+    if cache_path:
+        os.environ["DG_JIT_CACHE_DIR"] = cache_path
 
 # Refer to https://github.com/deepseek-ai/DeepGEMM/commit/d75b218b7b8f4a5dd5406ac87905039ead3ae42f
 # NVRTC may have performance loss with some cases.
