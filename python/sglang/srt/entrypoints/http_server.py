@@ -1955,6 +1955,12 @@ def launch_server(
     1. The HTTP server, Engine, and TokenizerManager all run in the main process.
     2. Inter-process communication is done through IPC (each process uses a different port) via the ZMQ library.
     """
+    # Configure unified JIT cache before any compilation
+    from sglang.srt.cache_config import configure_jit_cache_root
+
+    cache_root = configure_jit_cache_root()
+    logger.info(f"SGLang JIT cache configured at: {cache_root}")
+
     # Launch subprocesses
     tokenizer_manager, template_manager, scheduler_infos, port_args = (
         _launch_subprocesses(

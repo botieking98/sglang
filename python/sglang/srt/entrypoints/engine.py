@@ -143,6 +143,12 @@ class Engine(EngineBase):
         Please refer to `ServerArgs` for the documentation.
         """
 
+        # Configure unified JIT cache before any compilation
+        from sglang.srt.cache_config import configure_jit_cache_root
+
+        cache_root = configure_jit_cache_root()
+        logger.info(f"SGLang JIT cache configured at: {cache_root}")
+
         # Parse server_args
         if "server_args" in kwargs:
             # Directly load server_args

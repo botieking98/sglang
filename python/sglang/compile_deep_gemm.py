@@ -179,6 +179,12 @@ def run_compile(server_args: ServerArgs, compile_args: CompileArgs):
 
 
 if __name__ == "__main__":
+    # Configure unified JIT cache before any DeepGEMM operations
+    from sglang.srt.cache_config import configure_jit_cache_root
+
+    cache_root = configure_jit_cache_root()
+    print(f"DeepGEMM compilation cache configured at: {cache_root}")
+
     parser = argparse.ArgumentParser()
     ServerArgs.add_cli_args(parser)
     CompileArgs.add_cli_args(parser)
