@@ -399,7 +399,9 @@ class TboDPAttentionPreparer:
                 token_num_per_seq=token_num_per_seq,
             )
             resolved_deepep_mode = deepep_mode.resolve(local_batch.is_extend_in_batch)
-            local_can_run_tbo = (self.local_tbo_split_seq_index is not None) and not (
+            # Don't run TBO if batch size is too small (<= 1)
+            batch_size_too_small = local_batch.batch_size() <= 1
+            local_can_run_tbo = (self.local_tbo_split_seq_index is not None) and not batch_size_too_small and not (
                 (
                     local_batch.forward_mode.is_extend()
                     and not local_batch.forward_mode.is_target_verify()
@@ -470,6 +472,11 @@ class TboForwardBatchPreparer:
     @classmethod
     def prepare(cls, batch: ForwardBatch, is_draft_worker: bool = False):
         if batch.tbo_split_seq_index is None or is_draft_worker:
+            return
+
+        # Don't split if batch size is too small (<= 1)
+        # This can happen for decode mode with batch_size=1
+        if batch.batch_size <= 1:
             return
 
         tbo_children_num_token_non_padded = (
@@ -730,8 +737,7 @@ class TboForwardBatchPreparer:
                 extend_num_tokens=extend_num_tokens,
                 attn_backend=output_attn_backend,
                 num_token_non_padded=out_num_token_non_padded,
-                # TODO: handle it when we need TBO + DeepSeek V3.2
-                num_token_non_padded_cpu=None,
+                num_token_non_padded_cpu=end_token_index - start_token_index,
                 tbo_split_seq_index=None,
                 tbo_parent_token_range=(start_token_index, end_token_index),
                 tbo_children=None,
