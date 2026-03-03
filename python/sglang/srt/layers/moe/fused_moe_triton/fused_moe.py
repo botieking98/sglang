@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, List, Optional
 
 import torch
 import torch.nn.functional as F
+import triton
 import triton.language as tl
 
 from sglang.srt.layers.moe.moe_runner import MoeRunnerConfig
@@ -424,6 +425,37 @@ def fused_experts_impl(
     else:
         out_hidden_states = torch.empty_like(hidden_states)
 
+    # Pre-allocate buffers for moe_align_block_size to avoid dynamic
+    # allocations inside the chunk loop. This is critical for CUDA graph
+    # compatibility: tensors allocated during graph capture get specific GPU
+    # addresses baked into the graph, and re-allocating them on replay would
+    # produce stale pointers causing illegal memory access.
+    block_size_m = config["BLOCK_SIZE_M"]
+    if M * topk < E + 1:
+        max_num_tokens_padded = M * topk * block_size_m
+    else:
+        max_num_tokens_padded = M * topk + (E + 1) * (block_size_m - 1)
+    max_num_m_blocks = triton.cdiv(max_num_tokens_padded, block_size_m)
+    _sorted_ids_buf = torch.empty(
+        (max_num_tokens_padded,), dtype=torch.int32, device=hidden_states.device
+    )
+    _expert_ids_buf = torch.empty(
+        (max_num_m_blocks,), dtype=torch.int32, device=hidden_states.device
+    )
+    _num_tokens_post_pad_buf = torch.empty(
+        (1,), dtype=torch.int32, device=hidden_states.device
+    )
+    _cumsum_buf = torch.empty(
+        (E + 2,), dtype=torch.int32, device=hidden_states.device
+    )
+
+    # Pre-allocate intermediate_cache2 with max size to avoid per-chunk allocation
+    intermediate_cache2 = torch.empty(
+        (total_tokens, N // 2),
+        device=hidden_states.device,
+        dtype=hidden_states.dtype,
+    )
+
     for chunk in range((num_tokens // CHUNK_SIZE) + 1):
         begin_chunk_idx, end_chunk_idx = (
             chunk * CHUNK_SIZE,
@@ -457,17 +489,19 @@ def fused_experts_impl(
         intermediate_cache1 = cache[: total_tokens * N].view(
             (total_tokens, N),
         )
-        intermediate_cache2 = torch.empty(
-            (total_tokens, N // 2),
-            device=hidden_states.device,
-            dtype=hidden_states.dtype,
-        )
+        curr_intermediate_cache2 = intermediate_cache2[:total_tokens]
 
         curr_topk_ids = topk_ids[begin_chunk_idx:end_chunk_idx]
         curr_topk_weights = topk_weights[begin_chunk_idx:end_chunk_idx]
 
         sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(
-            curr_topk_ids, config["BLOCK_SIZE_M"], E
+            curr_topk_ids,
+            config["BLOCK_SIZE_M"],
+            E,
+            sorted_ids=_sorted_ids_buf,
+            expert_ids=_expert_ids_buf,
+            num_tokens_post_pad=_num_tokens_post_pad_buf,
+            cumsum_buffer=_cumsum_buf,
         )
 
         invoke_fused_moe_kernel(
@@ -503,20 +537,20 @@ def fused_experts_impl(
             # - gemm1_alpha == None and gemm1_limit != None: silu+clamp+mul(limit-only)
             if gemm1_alpha is not None:
                 assert gemm1_limit is not None
-                intermediate_cache2 = _swiglu_gpt_oss_sigmoid_alpha(
+                curr_intermediate_cache2 = _swiglu_gpt_oss_sigmoid_alpha(
                     intermediate_cache1.view(-1, N), gemm1_alpha, gemm1_limit
                 )
             elif gemm1_limit is not None:
-                intermediate_cache2 = _swiglu_silu_clamp_mul(
+                curr_intermediate_cache2 = _swiglu_silu_clamp_mul(
                     intermediate_cache1.view(-1, N), gemm1_limit
                 )
             elif _is_cuda or _is_hip or _is_xpu:
                 if not filter_expert:
-                    silu_and_mul(intermediate_cache1.view(-1, N), intermediate_cache2)
+                    silu_and_mul(intermediate_cache1.view(-1, N), curr_intermediate_cache2)
                 else:
                     act_and_mul_triton(
                         intermediate_cache1.view(-1, N),
-                        intermediate_cache2,
+                        curr_intermediate_cache2,
                         config,
                         topk_ids,
                         expert_ids,
@@ -526,23 +560,23 @@ def fused_experts_impl(
             else:
                 if _has_vllm_ops:
                     vllm_ops.silu_and_mul(
-                        intermediate_cache2, intermediate_cache1.view(-1, N)
+                        curr_intermediate_cache2, intermediate_cache1.view(-1, N)
                     )
                 else:
                     # Fallback: native PyTorch silu_and_mul
                     x = intermediate_cache1.view(-1, N)
                     d = x.shape[-1] // 2
-                    intermediate_cache2.copy_(F.silu(x[..., :d]) * x[..., d:])
+                    curr_intermediate_cache2.copy_(F.silu(x[..., :d]) * x[..., d:])
         elif activation == "gelu" and is_gated:
             assert gemm1_alpha is None, "gemm1_alpha is not supported for gelu"
             assert gemm1_limit is None, "gemm1_limit is not supported for gelu"
             if _is_cuda or _is_hip:
                 if not filter_expert:
-                    gelu_and_mul(intermediate_cache1.view(-1, N), intermediate_cache2)
+                    gelu_and_mul(intermediate_cache1.view(-1, N), curr_intermediate_cache2)
                 else:
                     act_and_mul_triton(
                         intermediate_cache1.view(-1, N),
-                        intermediate_cache2,
+                        curr_intermediate_cache2,
                         config,
                         topk_ids,
                         expert_ids,
@@ -552,25 +586,25 @@ def fused_experts_impl(
             else:
                 if _has_vllm_ops:
                     vllm_ops.gelu_and_mul(
-                        intermediate_cache2, intermediate_cache1.view(-1, N)
+                        curr_intermediate_cache2, intermediate_cache1.view(-1, N)
                     )
                 else:
                     # Fallback: native PyTorch gelu_and_mul
                     x = intermediate_cache1.view(-1, N)
                     d = x.shape[-1] // 2
-                    intermediate_cache2.copy_(F.gelu(x[..., :d]) * x[..., d:])
+                    curr_intermediate_cache2.copy_(F.gelu(x[..., :d]) * x[..., d:])
         # Activation function without multiplication
         elif activation == "silu" and not is_gated:
-            intermediate_cache2 = F.silu(intermediate_cache1.view(-1, N))
+            curr_intermediate_cache2 = F.silu(intermediate_cache1.view(-1, N))
         elif activation == "gelu" and not is_gated:
-            intermediate_cache2 = F.gelu(intermediate_cache1.view(-1, N))
+            curr_intermediate_cache2 = F.gelu(intermediate_cache1.view(-1, N))
         elif activation == "relu2" and not is_gated:
-            intermediate_cache2 = torch.square(F.relu(intermediate_cache1.view(-1, N)))
+            curr_intermediate_cache2 = torch.square(F.relu(intermediate_cache1.view(-1, N)))
         else:
             raise ValueError(f"Unsupported activation: {activation=}, with {is_gated=}")
 
         invoke_fused_moe_kernel(
-            intermediate_cache2,
+            curr_intermediate_cache2,
             w2,
             b2,
             (

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 import triton
@@ -16,7 +16,13 @@ if _is_cuda or _is_hip or _is_xpu:
 
 
 def moe_align_block_size(
-    topk_ids: torch.Tensor, block_size: int, num_experts: int
+    topk_ids: torch.Tensor,
+    block_size: int,
+    num_experts: int,
+    sorted_ids: Optional[torch.Tensor] = None,
+    expert_ids: Optional[torch.Tensor] = None,
+    num_tokens_post_pad: Optional[torch.Tensor] = None,
+    cumsum_buffer: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Aligns the token distribution across experts to be compatible with block
@@ -59,19 +65,23 @@ def moe_align_block_size(
         max_num_tokens_padded = topk_ids.numel() * block_size
     else:
         max_num_tokens_padded = topk_ids.numel() + (num_experts + 1) * (block_size - 1)
-    sorted_ids = torch.empty(
-        (max_num_tokens_padded,), dtype=torch.int32, device=topk_ids.device
-    )
+    if sorted_ids is None:
+        sorted_ids = torch.empty(
+            (max_num_tokens_padded,), dtype=torch.int32, device=topk_ids.device
+        )
     max_num_m_blocks = triton.cdiv(max_num_tokens_padded, block_size)
-    expert_ids = torch.empty(
-        (max_num_m_blocks,), dtype=torch.int32, device=topk_ids.device
-    )
-    num_tokens_post_pad = torch.empty((1), dtype=torch.int32, device=topk_ids.device)
+    if expert_ids is None:
+        expert_ids = torch.empty(
+            (max_num_m_blocks,), dtype=torch.int32, device=topk_ids.device
+        )
+    if num_tokens_post_pad is None:
+        num_tokens_post_pad = torch.empty((1), dtype=torch.int32, device=topk_ids.device)
 
     # In EP, expert_ids for filtered experts are -1. We have num_experts + 1 ids in total.
-    cumsum_buffer = torch.empty(
-        (num_experts + 2,), dtype=torch.int32, device=topk_ids.device
-    )
+    if cumsum_buffer is None:
+        cumsum_buffer = torch.empty(
+            (num_experts + 2,), dtype=torch.int32, device=topk_ids.device
+        )
 
     sgl_moe_align_block_size(
         topk_ids,
