@@ -449,9 +449,11 @@ def fused_experts_impl(
         (E + 2,), dtype=torch.int32, device=hidden_states.device
     )
 
-    # Pre-allocate intermediate_cache2 with max size to avoid per-chunk allocation
+    # Pre-allocate intermediate_cache2 with max size to avoid per-chunk allocation.
+    # For gated activations, we need N//2; for non-gated activations, we need N.
+    intermediate_cache2_size_n = N // 2 if is_gated else N
     intermediate_cache2 = torch.empty(
-        (total_tokens, N // 2),
+        (total_tokens, intermediate_cache2_size_n),
         device=hidden_states.device,
         dtype=hidden_states.dtype,
     )
@@ -537,12 +539,16 @@ def fused_experts_impl(
             # - gemm1_alpha == None and gemm1_limit != None: silu+clamp+mul(limit-only)
             if gemm1_alpha is not None:
                 assert gemm1_limit is not None
-                curr_intermediate_cache2 = _swiglu_gpt_oss_sigmoid_alpha(
-                    intermediate_cache1.view(-1, N), gemm1_alpha, gemm1_limit
+                curr_intermediate_cache2.copy_(
+                    _swiglu_gpt_oss_sigmoid_alpha(
+                        intermediate_cache1.view(-1, N), gemm1_alpha, gemm1_limit
+                    )
                 )
             elif gemm1_limit is not None:
-                curr_intermediate_cache2 = _swiglu_silu_clamp_mul(
-                    intermediate_cache1.view(-1, N), gemm1_limit
+                curr_intermediate_cache2.copy_(
+                    _swiglu_silu_clamp_mul(
+                        intermediate_cache1.view(-1, N), gemm1_limit
+                    )
                 )
             elif _is_cuda or _is_hip or _is_xpu:
                 if not filter_expert:
@@ -595,11 +601,13 @@ def fused_experts_impl(
                     curr_intermediate_cache2.copy_(F.gelu(x[..., :d]) * x[..., d:])
         # Activation function without multiplication
         elif activation == "silu" and not is_gated:
-            curr_intermediate_cache2 = F.silu(intermediate_cache1.view(-1, N))
+            curr_intermediate_cache2.copy_(F.silu(intermediate_cache1.view(-1, N)))
         elif activation == "gelu" and not is_gated:
-            curr_intermediate_cache2 = F.gelu(intermediate_cache1.view(-1, N))
+            curr_intermediate_cache2.copy_(F.gelu(intermediate_cache1.view(-1, N)))
         elif activation == "relu2" and not is_gated:
-            curr_intermediate_cache2 = torch.square(F.relu(intermediate_cache1.view(-1, N)))
+            curr_intermediate_cache2.copy_(
+                torch.square(F.relu(intermediate_cache1.view(-1, N)))
+            )
         else:
             raise ValueError(f"Unsupported activation: {activation=}, with {is_gated=}")
 
